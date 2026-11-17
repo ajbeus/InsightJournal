@@ -31,7 +31,10 @@ RAG/embeddings work in an interview).
    Firebase**: the `mood` field round-trip and the `insights/weeklySummary`
    document are untested there. Awaiting the owner's manual test.
 3. Embeddings + RAG semantic search (key resume milestone) — not started
-4. Home screen widget, voice input, camera/OCR — not started
+   **Quick-note widget** (2026-11-16): built and run on the emulator in demo mode
+   (added from the widget picker, tap opens the pop-up, saved note appears in
+   Quick notes). Not yet run signed in against real Firebase.
+4. Voice input, camera/OCR — not started
 5. React web app — not started
 
 Work phase by phase. After each phase: build, tell the owner what to test manually,
@@ -62,6 +65,9 @@ app/src/main/java/com/adam/insightjournal/
                            parseDraft, weekPrompt
     EntryDraftHolder.kt    passes an AI draft from Quick notes to the editor
     QuickNoteSummaries.kt  when to summarize, in-progress/failed status per note
+  widget/
+    QuickNoteWidget.kt     home screen widget (AppWidgetProvider + RemoteViews, static layout)
+    QuickNoteActivity.kt   translucent pop-up the widget opens; saves like the Quick notes tab
   ui/
     auth/      AuthScreen + AuthViewModel
     entries/   EntryListScreen + EntryListViewModel (groupByMonth)
@@ -137,6 +143,14 @@ app/src/main/java/com/adam/insightjournal/
   underneath. Both images were cropped from one 1254px picture, so they are a
   little soft on high-density screens; higher-resolution originals would drop
   straight in (update `ART_ASPECT` in SplashScreen.kt if the proportions change).
+
+- **Widget**: a static 3x1 bar (`res/layout/widget_quick_note.xml`) whose only
+  job is to open `QuickNoteActivity`, a see-through activity that draws a card
+  above the keyboard. Saving calls `quickNoteRepository.addNote` then
+  `quickNoteSummaries.summarize`, the same as the tab. Signed out, it shows a
+  message with an "Open app" button. The pop-up is not exported, so
+  `adb shell am start` cannot open it; test it from a placed widget. Its scrim
+  uses `pointerInput`, not `clickable`, so it never takes focus from the field.
 
 ## Design decisions
 

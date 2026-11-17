@@ -4,4 +4,6 @@
     <color name="ic_launcher_background">#FF32160A</color>
     <!-- Top edge of the splash artwork; shown behind it and while the app starts. -->
     <color name="splash_background">#FF1F1411</color>
+    <color name="widget_text">#FFF3D9B1</color>
+    <color name="widget_text_secondary">#FFC9A77C</color>
 </resources>

@@ -1,3 +1,6 @@
 <resources>
     <string name="app_name">InsightJournal</string>
+    <string name="widget_title">Quick note</string>
+    <string name="widget_hint">Tap to jot something down</string>
+    <string name="widget_description">Write a quick note without opening the app</string>
 </resources>

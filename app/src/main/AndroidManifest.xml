@@ -24,6 +24,27 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Pop-up opened by the home screen widget. Its own task, kept out of Recents. -->
+        <activity
+            android:name=".widget.QuickNoteActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:taskAffinity=""
+            android:theme="@style/Theme.InsightJournal.Popup"
+            android:windowSoftInputMode="adjustResize" />
+
+        <receiver
+            android:name=".widget.QuickNoteWidget"
+            android:exported="false"
+            android:label="@string/widget_title">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/quick_note_widget_info" />
+        </receiver>
     </application>
 
 </manifest>
