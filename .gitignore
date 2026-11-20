@@ -22,3 +22,12 @@ app/google-services.json
 
 # Pre-git source backup
 .backup/
+
+# Android Studio's last-picked run device (includes the phone's serial number)
+/.idea/deploymentTargetSelector.xml
+
+# Release signing keys and exported builds
+*.jks
+*.keystore
+*.apk
+*.aab
