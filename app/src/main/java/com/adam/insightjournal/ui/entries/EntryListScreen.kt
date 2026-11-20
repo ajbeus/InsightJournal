@@ -63,7 +63,7 @@ fun EntryListScreen(
     onNewEntry: () -> Unit,
     onOpenEntry: (String) -> Unit,
     onSearch: () -> Unit,
-    onAppearance: () -> Unit,
+    onSettings: () -> Unit,
     onSignOut: () -> Unit,
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -81,8 +81,8 @@ fun EntryListScreen(
                     IconButton(onClick = onSearch) {
                         Icon(Icons.Default.Search, contentDescription = "Search")
                     }
-                    IconButton(onClick = onAppearance) {
-                        Icon(Icons.Default.Settings, contentDescription = "Appearance")
+                    IconButton(onClick = onSettings) {
+                        Icon(Icons.Default.Settings, contentDescription = "Settings")
                     }
                     if (!demoMode) {
                         IconButton(onClick = onSignOut) {

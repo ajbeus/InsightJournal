@@ -76,6 +76,9 @@ class EntryEditorViewModel(
                 val entry = repository.getEntry(id)
                 if (entry == null) {
                     uiState.copy(isLoading = false, loadError = "This entry no longer exists.")
+                } else if (entry.unreadable) {
+                    // Saving would overwrite the stored copy, so it can't even be opened for editing.
+                    uiState.copy(isLoading = false, loadError = "This entry couldn't be decrypted, so it can't be opened.")
                 } else {
                     original = entry
                     uiState.copy(

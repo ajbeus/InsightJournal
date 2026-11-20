@@ -82,6 +82,9 @@ dependencies {
     implementation(libs.firebase.firestore)
     implementation(libs.kotlinx.coroutines.play.services)
     implementation(libs.anthropic.java)
+    implementation(libs.androidx.biometric)
+    // BiometricPrompt needs a FragmentActivity; pinned so it isn't the old one biometric pulls in.
+    implementation(libs.androidx.fragment)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

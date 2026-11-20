@@ -13,6 +13,8 @@ interface AuthRepository {
     val currentUser: StateFlow<AppUser?>
     suspend fun signIn(email: String, password: String)
     suspend fun signUp(email: String, password: String)
+    /** Emails a link for choosing a new account password. Doesn't touch the journal passphrase. */
+    suspend fun sendPasswordReset(email: String)
     fun signOut()
 }
 
@@ -38,6 +40,10 @@ class FirebaseAuthRepository(
         auth.createUserWithEmailAndPassword(email, password).await()
     }
 
+    override suspend fun sendPasswordReset(email: String) {
+        auth.sendPasswordResetEmail(email).await()
+    }
+
     override fun signOut() = auth.signOut()
 }
 
@@ -46,5 +52,6 @@ class LocalAuthRepository : AuthRepository {
     override val currentUser: StateFlow<AppUser?> = MutableStateFlow(AppUser("local", null))
     override suspend fun signIn(email: String, password: String) = Unit
     override suspend fun signUp(email: String, password: String) = Unit
+    override suspend fun sendPasswordReset(email: String) = Unit
     override fun signOut() = Unit
 }
