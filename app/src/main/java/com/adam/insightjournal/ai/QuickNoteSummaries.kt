@@ -28,6 +28,7 @@ sealed interface SummaryStatus {
 class QuickNoteSummaries(
     private val repository: QuickNoteRepository,
     private val ai: JournalAi?,
+    private val settings: AiSettings,
     private val scope: CoroutineScope,
 ) {
     /** False when no API key is configured. */
@@ -40,15 +41,17 @@ class QuickNoteSummaries(
     fun needsSummary(note: QuickNote): Boolean =
         note.summary == null && note.text.length >= MIN_CHARS_TO_SUMMARIZE
 
+    /** Does nothing while AI features are switched off, so new notes are never sent automatically. */
     fun summarize(note: QuickNote) {
         val ai = ai ?: return
-        if (!needsSummary(note) || _status.value[note.id] is SummaryStatus.InProgress) return
+        if (!settings.enabled.value) return
+        if (note.unreadable || !needsSummary(note) || _status.value[note.id] is SummaryStatus.InProgress) return
 
         _status.update { it + (note.id to SummaryStatus.InProgress) }
         scope.launch {
             try {
                 val summary = ai.summarize(note.text)
-                repository.setSummary(note.id, summary)
+                repository.setSummary(note, summary)
                 _status.update { it - note.id }
             } catch (e: CancellationException) {
                 throw e

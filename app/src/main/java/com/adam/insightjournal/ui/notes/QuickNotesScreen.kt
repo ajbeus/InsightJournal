@@ -53,6 +53,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.adam.insightjournal.ai.SummaryStatus
 import com.adam.insightjournal.data.model.QuickNote
+import com.adam.insightjournal.ai.AiSettings
+import com.adam.insightjournal.ui.ai.rememberAiGate
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -64,9 +66,12 @@ private val dayFormat = DateTimeFormatter.ofPattern("EEE, MMM d")
 @Composable
 fun QuickNotesScreen(
     viewModel: QuickNotesViewModel,
+    aiSettings: AiSettings,
     onOpenDraft: () -> Unit,
     bottomBar: @Composable () -> Unit,
 ) {
+    // Every AI action asks for consent first while AI features are off.
+    val aiGate = rememberAiGate(aiSettings)
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     var noteToDelete by remember { mutableStateOf<QuickNote?>(null) }
@@ -125,14 +130,14 @@ fun QuickNotesScreen(
                                         onToggle = {
                                             toggledDays = if (key in toggledDays) toggledDays - key else toggledDays + key
                                         },
-                                        onCreateEntry = { viewModel.createEntryForDay(day.date) },
+                                        onCreateEntry = { aiGate.run { viewModel.createEntryForDay(day.date) } },
                                     )
                                 }
                                 if (expanded) {
                                     items(day.notes, key = { it.note.id }) { item ->
                                         NoteCard(
                                             item = item,
-                                            onSummarize = { viewModel.requestSummary(item.note) },
+                                            onSummarize = { aiGate.run { viewModel.requestSummary(item.note) } },
                                             onDelete = { noteToDelete = item.note },
                                         )
                                     }

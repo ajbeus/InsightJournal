@@ -30,7 +30,16 @@ RAG/embeddings work in an interview).
    in demo mode (screenshots in `docs/screenshots/`). **Not yet run against real
    Firebase**: the `mood` field round-trip and the `insights/weeklySummary`
    document are untested there. Awaiting the owner's manual test.
-3. Embeddings + RAG semantic search (key resume milestone) — not started
+   **2d. End-to-end encryption, fingerprint unlock, AI consent, forgot password**
+   (built 2026-11-18 on branch `feature/e2e-encryption`, not committed). Builds;
+   50 unit tests and 4 emulator tests (`DeviceKeyStoreTest`) pass; the sign-in
+   screen and "Forgot password?" were checked on the emulator. **Nothing after
+   sign-in has been run** (no test account was available): setup, unlock,
+   recovery, migration of old plaintext documents, fingerprint unlock, Settings
+   and the AI consent dialog are untested. Awaiting the owner's manual test.
+3. Embeddings + RAG semantic search (key resume milestone) — not started.
+   Depends on 2d: embeddings are stored encrypted, so similarity search runs
+   on the device.
    **Quick-note widget** (2026-11-16): built and run on the emulator in demo mode
    (added from the widget picker, tap opens the pop-up, saved note appears in
    Quick notes). Not yet run signed in against real Firebase.
@@ -65,6 +74,15 @@ app/src/main/java/com/adam/insightjournal/
                            parseDraft, weekPrompt
     EntryDraftHolder.kt    passes an AI draft from Quick notes to the editor
     QuickNoteSummaries.kt  when to summarize, in-progress/failed status per note
+  crypto/
+    JournalCrypto.kt       AES-256-GCM seal/open, PBKDF2, wrap/unwrap data key,
+                           RecoveryCode, passphraseProblem (pure, JVM-tested)
+    DeviceKeyStore.kt      this phone's copy of the data key, wrapped by Android Keystore
+                           (plain mode or biometric-only key)
+    KeyManager.kt          VaultState machine; setup/unlock/recover/biometric/change/lock/
+                           delete-everything; ContentCipher (what repositories use)
+  data/EncryptedFields.kt  `enc` field helpers, float packing, whileUnlocked()
+  ai/AiSettings.kt         AI on/off switch (off by default, per phone)
   widget/
     QuickNoteWidget.kt     home screen widget (AppWidgetProvider + RemoteViews, static layout)
     QuickNoteActivity.kt   translucent pop-up the widget opens; saves like the Quick notes tab
@@ -75,7 +93,9 @@ app/src/main/java/com/adam/insightjournal/
     notes/     QuickNotesScreen + QuickNotesViewModel
     search/    SearchScreen + SearchViewModel
     insights/  InsightsScreen + InsightsViewModel + MoodCharts (Canvas charts)
-    settings/  AppearanceScreen (theme picker)
+    settings/  SettingsScreen (security, AI toggle, account) + AppearanceScreen (theme picker)
+    security/  VaultScreens (VaultGate: setup, unlock, recovery, reset) + Biometrics (prompt)
+    ai/        AiConsent (AiGate + consent dialog wrapping every AI action)
     splash/    SplashScreen (full-screen loading artwork)
     theme/     Palettes (color schemes from hues), ThemeSettings (+ repository), Theme, Type
 ```
@@ -152,6 +172,92 @@ app/src/main/java/com/adam/insightjournal/
   `adb shell am start` cannot open it; test it from a placed widget. Its scrim
   uses `pointerInput`, not `clickable`, so it never takes focus from the field.
 
+## End-to-end encryption (phase 2d, built as designed below)
+
+Implementation notes beyond the design: the setup screen withholds the unlock
+until the user ticks "I've saved my recovery code" (`finishSetup`); `setUp`
+checks the server (`Source.SERVER`) so it can never overwrite an existing key;
+signing out forgets the device copy; with fingerprint unlock on, the app
+re-locks after 5 minutes in the background (MainActivity onStop/onStart);
+legacy plaintext documents are rewritten encrypted after every unlock
+(AppContainer); a document that fails to decrypt is shown as "Can't decrypt"
+and the editor refuses to open it. MainActivity is a FragmentActivity because
+BiometricPrompt needs one. PBKDF2 at 600,000 iterations took ~4.3 s on the x86
+emulator; real phones should be faster, but watch unlock time.
+
+**Why**: Firestore rules only stop other app users. Anyone with console access
+(the developer) can read every entry. The goal is that the database holds only
+ciphertext and the developer cannot read journals, even with full console access.
+It does NOT hide text from the AI providers (Anthropic, OpenAI), which receive
+plaintext from the device for summaries, drafts, weekly insights and embeddings,
+and it does not protect a compromised or unlocked phone. State this in any privacy
+policy.
+
+**Scheme (envelope encryption, platform crypto only, no new dependency)**
+- A random 256-bit data key (DEK) encrypts all content with AES-256-GCM
+  (`javax.crypto`, 12-byte random nonce per write). The document id is passed as
+  AAD so a ciphertext cannot be moved to another document.
+- The DEK is stored wrapped, never raw, in `users/{uid}/keys/main`, once per way
+  of unlocking it: (1) a key derived from the user's passphrase with
+  PBKDF2-HMAC-SHA256 (600,000 iterations, random salt; WebCrypto has PBKDF2 too,
+  which keeps the Phase 5 web app compatible), and (2) a key derived from a random
+  recovery code shown once at setup. A wrong passphrase shows up as a GCM tag
+  failure on unwrap. Changing the passphrase re-wraps the DEK; no data is rewritten.
+- Each device keeps the DEK wrapped by an Android Keystore key (in app-private
+  storage, excluded from backup), so the passphrase is typed once per device.
+  Sign-out or "lock" removes it.
+- Lost passphrase AND recovery code = data is unrecoverable. The unlock screen
+  offers "reset and delete all data" as the only way out.
+
+**What is encrypted** (one blob per document, field `enc` = version + nonce +
+ciphertext, Base64, over a JSON payload)
+- Entries: title, body, summary, mood, embedding (as packed floats), embeddingModel,
+  attachment metadata.
+- Quick notes: text, summary, embedding, embeddingModel.
+- `insights/weeklySummary`: the summary text.
+- Attachment files (when built): encrypted bytes before upload to Storage.
+- Left readable on purpose: `entryDate`, `monthKey`, `createdAt`, `updatedAt`,
+  `source`, `sourceNoteIds` / `entryId` (random ids), so ordering and the existing
+  queries keep working. Embeddings are encrypted because they can be partly
+  inverted back to text.
+
+**Code layout**
+- `crypto/Crypto.kt`: pure functions (derive key, wrap/unwrap DEK, seal/open with
+  AAD). JVM unit tests: round trip, wrong key, tampered ciphertext, wrong AAD.
+- `crypto/KeyManager.kt`: state `NeedsSetup | Locked | Unlocked`, holds the DEK in
+  memory only, owns the Keystore-wrapped device copy and the `keys/main` document.
+- `FirestoreJournalRepository`, `QuickNoteRepository`, `WeeklySummaryRepository`
+  seal in `toMap` and open in the reader; they only emit while Unlocked. A document
+  that fails to decrypt shows a placeholder instead of crashing. Documents with no
+  `enc` field are read as plaintext (old data), so migration can be lazy or a
+  one-time "encrypt existing entries" pass that rewrites each doc with a full `set`.
+- `ui/security/`: setup screen (passphrase + recovery code), unlock screen,
+  settings (change passphrase, new recovery code, lock now). `MainActivity` gets a
+  key gate after the auth gate. The widget pop-up shows "Open the app to unlock"
+  when no key is on the device.
+- Demo mode (no Firebase) skips all of this.
+- No plaintext in logs, ever.
+
+**Biometric unlock**: built (Settings > Unlock with fingerprint). The data key is
+wrapped by a Keystore key that needs a strong biometric for every use and is
+invalidated when fingerprints change; the plain copy is then removed.
+
+**AI privacy (2026-11-18; layer 1 built, layers 2-4 still proposals)**: layer 1 =
+`AiSettings` (off by default) + `AiGate` consent dialog on first use; automatic
+note summaries never run while off. there is no
+"incognito" mode for the Anthropic or OpenAI APIs. Per their docs both say API
+data is not used for training by default and is kept up to ~30 days for abuse
+monitoring; zero data retention is by application and not for individuals.
+Proposed layers: (1) AI features opt-in with a consent screen and per-feature
+toggles, including the automatic note summaries; (2) Phase 3 embeddings computed
+on the device (e.g. EmbeddingGemma via MediaPipe/LiteRT) instead of OpenAI, after
+a side-by-side quality check on real entries, so semantic search never leaves the
+phone; (3) later, an on-device option for summaries/drafts behind the existing
+`JournalAi` interface, with Claude as the labelled cloud option; (4) before any
+distribution, a server proxy that does not log content.
+Login has a "Forgot password?" link (`AuthRepository.sendPasswordReset`). It
+resets the account password only; the journal passphrase is separate.
+
 ## Design decisions
 
 - Phase 2/3 fields (`summary`, `embedding`, `embeddingModel`) are nullable stubs on
@@ -161,6 +267,8 @@ app/src/main/java/com/adam/insightjournal/
   well under $5/month.
 - Open question for Phase 3: `embedding` on the entry document is loaded with every
   list read (~1536 numbers per entry). Consider a separate chunks subcollection.
+  With encryption (2d) the embedding lives inside the encrypted blob and similarity
+  runs on the device, so Firestore's server-side vector search is not an option.
 - Data/repository layer before UI. Manual DI via `AppContainer`; add Hilt only if it
   earns its place.
 - Keep retrieval logic for Phase 3 isolated in its own readable module.
@@ -187,10 +295,12 @@ export JAVA_HOME="/c/Program Files/Android/Android Studio/jbr"
 
 compileSdk 36, targetSdk 35, minSdk 26. Kotlin 2.3.0 (Firebase BoM 35.x needs
 Kotlin 2.3+; BoM 35.1.0 failed to compile on 2.0.21), google-services 4.5.0. Emulator AVD: `Medium_Phone_API_36.0`.
-Git: local repository on `main`, no remote yet. A copy of the source from before
+Git: `main` tracks `origin` (https://github.com/ajbeus/InsightJournal). A copy of the source from before
 the 2026-11-16 session is in `.backup/pre-overhaul-2026-11-16.tar.gz` (gitignored).
 
-Unit tests (pure logic: search, mood stats, week digest, palettes): `./gradlew testDebugUnitTest`.
+Unit tests (pure logic: search, mood stats, week digest, palettes, crypto): `./gradlew testDebugUnitTest`.
+Device tests (Keystore, PBKDF2 timing): `ANDROID_SERIAL=emulator-5554 ./gradlew connectedDebugAndroidTest`
+(set the serial: the owner's phone is sometimes plugged in too).
 
 Emulator notes: headless (`-no-window`) `adb exec-out screencap` returns blank
 frames; use `adb emu screenrecord screenshot <dir>` instead. `adb shell input

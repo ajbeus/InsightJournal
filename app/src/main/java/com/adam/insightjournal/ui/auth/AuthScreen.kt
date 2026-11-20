@@ -40,6 +40,8 @@ data class AuthUiState(
     val isCreatingAccount: Boolean = false,
     val isLoading: Boolean = false,
     val error: String? = null,
+    /** A non-error message, e.g. "reset link sent". */
+    val info: String? = null,
 ) {
     val canSubmit: Boolean get() = email.isNotBlank() && password.length >= 6 && !isLoading
 }
@@ -49,9 +51,29 @@ class AuthViewModel(private val auth: AuthRepository) : ViewModel() {
     var uiState by mutableStateOf(AuthUiState())
         private set
 
-    fun onEmailChange(value: String) { uiState = uiState.copy(email = value, error = null) }
-    fun onPasswordChange(value: String) { uiState = uiState.copy(password = value, error = null) }
-    fun toggleMode() { uiState = uiState.copy(isCreatingAccount = !uiState.isCreatingAccount, error = null) }
+    fun onEmailChange(value: String) { uiState = uiState.copy(email = value, error = null, info = null) }
+    fun onPasswordChange(value: String) { uiState = uiState.copy(password = value, error = null, info = null) }
+    fun toggleMode() {
+        uiState = uiState.copy(isCreatingAccount = !uiState.isCreatingAccount, error = null, info = null)
+    }
+
+    fun sendPasswordReset() {
+        val email = uiState.email.trim()
+        if (email.isEmpty()) {
+            uiState = uiState.copy(error = "Enter your email above first.", info = null)
+            return
+        }
+        uiState = uiState.copy(isLoading = true, error = null, info = null)
+        viewModelScope.launch {
+            uiState = try {
+                auth.sendPasswordReset(email)
+                // Worded so it doesn't reveal whether an account exists for that address.
+                uiState.copy(isLoading = false, info = "If there's an account for $email, a reset link is on its way.")
+            } catch (e: Exception) {
+                uiState.copy(isLoading = false, error = e.localizedMessage ?: "Couldn't send the email. Try again.")
+            }
+        }
+    }
 
     /** On success the auth state changes and the root composable swaps this screen out. */
     fun submit() {
@@ -127,6 +149,14 @@ fun AuthScreen(viewModel: AuthViewModel) {
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
+            if (state.info != null) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    state.info,
+                    color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
             Spacer(Modifier.height(20.dp))
             Button(
                 onClick = viewModel::submit,
@@ -137,6 +167,11 @@ fun AuthScreen(viewModel: AuthViewModel) {
                     CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                 } else {
                     Text(if (state.isCreatingAccount) "Create account" else "Sign in")
+                }
+            }
+            if (!state.isCreatingAccount) {
+                TextButton(onClick = viewModel::sendPasswordReset, enabled = !state.isLoading) {
+                    Text("Forgot password?")
                 }
             }
             TextButton(onClick = viewModel::toggleMode) {

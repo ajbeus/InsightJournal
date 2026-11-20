@@ -1,13 +1,14 @@
 package com.adam.insightjournal.data
 
 import android.util.Log
+import com.adam.insightjournal.crypto.ContentCipher
+import com.adam.insightjournal.crypto.KeyManager
 import com.adam.insightjournal.data.model.QuickNote
 import com.google.firebase.Timestamp
 import com.google.firebase.firestore.CollectionReference
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -15,9 +16,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.tasks.await
+import org.json.JSONObject
 import java.time.Instant
 import java.util.UUID
 
@@ -28,8 +29,8 @@ interface QuickNoteRepository {
     /** Saves a new note and returns it (with its id). Like entries, writes don't wait for the server. */
     fun addNote(text: String): QuickNote
 
-    /** Stores the AI summary on an existing note. */
-    fun setSummary(id: String, summary: String)
+    /** Stores the AI summary on [note]. The whole note is passed because its text is re-encrypted with the summary. */
+    fun setSummary(note: QuickNote, summary: String)
 
     /**
      * Records which journal entry the notes were turned into, or clears the
@@ -42,9 +43,14 @@ interface QuickNoteRepository {
     val writeErrors: SharedFlow<String>
 }
 
-/** Quick notes live at users/{uid}/quickNotes/{noteId}. */
+/**
+ * Quick notes live at users/{uid}/quickNotes/{noteId}. The text, summary and
+ * embedding are encrypted on this phone (see EncryptedFields.kt); the creation
+ * time and the link to a journal entry stay readable for sorting.
+ */
 class FirestoreQuickNoteRepository(
     private val auth: AuthRepository,
+    private val keys: KeyManager,
     private val db: FirebaseFirestore = FirebaseFirestore.getInstance(),
 ) : QuickNoteRepository {
 
@@ -57,20 +63,20 @@ class FirestoreQuickNoteRepository(
     private fun requireUid(): String =
         auth.currentUser.value?.uid ?: error("No signed-in user")
 
-    @OptIn(ExperimentalCoroutinesApi::class)
-    override fun observeNotes(): Flow<List<QuickNote>> =
-        auth.currentUser.flatMapLatest { user ->
-            if (user == null) flowOf(emptyList()) else notesFlow(user.uid)
-        }
+    private fun requireCipher(): ContentCipher =
+        keys.cipher.value ?: error("The journal is locked")
 
-    private fun notesFlow(uid: String): Flow<List<QuickNote>> = callbackFlow {
+    override fun observeNotes(): Flow<List<QuickNote>> =
+        auth.whileUnlocked(keys, whenLocked = emptyList(), ::notesFlow)
+
+    private fun notesFlow(uid: String, cipher: ContentCipher): Flow<List<QuickNote>> = callbackFlow {
         val registration = notes(uid)
             .orderBy("createdAt", Query.Direction.DESCENDING)
             .addSnapshotListener { snapshot, error ->
                 if (error != null) {
                     close(error)
                 } else if (snapshot != null) {
-                    trySend(snapshot.documents.map { it.toQuickNote() })
+                    trySend(snapshot.documents.map { it.toQuickNote(cipher) })
                 }
             }
         awaitClose { registration.remove() }
@@ -79,21 +85,14 @@ class FirestoreQuickNoteRepository(
     override fun addNote(text: String): QuickNote {
         val doc = notes(requireUid()).document()
         val note = QuickNote(id = doc.id, text = text, createdAt = Instant.now())
-        doc.set(
-            mapOf(
-                "text" to note.text,
-                "createdAt" to Timestamp(note.createdAt.epochSecond, note.createdAt.nano),
-                "entryId" to null,
-                "summary" to null,
-                "embedding" to null,
-                "embeddingModel" to null,
-            )
-        ).addOnFailureListener { report("save note", it) }
+        doc.set(note.toMap(requireCipher())).addOnFailureListener { report("save note", it) }
         return note
     }
 
-    override fun setSummary(id: String, summary: String) {
-        notes(requireUid()).document(id).update("summary", summary)
+    override fun setSummary(note: QuickNote, summary: String) {
+        // Only the sealed field changes; the readable entry link is left alone.
+        val sealed = note.copy(summary = summary).sealedPayload(requireCipher())
+        notes(requireUid()).document(note.id).update(ENC_FIELD, sealed)
             .addOnFailureListener { report("save summary", it) }
     }
 
@@ -112,22 +111,60 @@ class FirestoreQuickNoteRepository(
             .addOnFailureListener { report("delete note", it) }
     }
 
+    /** Rewrites notes saved before encryption existed. Returns how many it changed. */
+    suspend fun encryptLegacyNotes(): Int {
+        val cipher = requireCipher()
+        val legacy = notes(requireUid()).get().await().documents.filter { !it.contains(ENC_FIELD) }
+        legacy.forEach { doc -> doc.reference.set(doc.toQuickNote(cipher).toMap(cipher)).await() }
+        return legacy.size
+    }
+
     private fun report(action: String, e: Exception) {
         Log.e("QuickNoteRepository", "Couldn't $action", e)
         _writeErrors.tryEmit("Couldn't $action: ${e.localizedMessage ?: "unknown error"}")
     }
 
-    private fun DocumentSnapshot.toQuickNote() = QuickNote(
-        id = id,
-        text = getString("text").orEmpty(),
-        createdAt = getTimestamp("createdAt")
-            ?.let { Instant.ofEpochSecond(it.seconds, it.nanoseconds.toLong()) }
-            ?: Instant.now(),
-        entryId = getString("entryId"),
-        summary = getString("summary"),
-        embedding = (get("embedding") as? List<*>)?.filterIsInstance<Number>()?.map { it.toFloat() },
-        embeddingModel = getString("embeddingModel"),
+    private fun notePath(id: String) = "quickNotes/$id"
+
+    private fun QuickNote.sealedPayload(cipher: ContentCipher): String = cipher.sealJson(
+        JSONObject()
+            .put("text", text)
+            .put("summary", summary ?: JSONObject.NULL)
+            .put("embedding", embedding?.packFloats() ?: JSONObject.NULL)
+            .put("embeddingModel", embeddingModel ?: JSONObject.NULL),
+        notePath(id),
     )
+
+    private fun QuickNote.toMap(cipher: ContentCipher): Map<String, Any?> = mapOf(
+        "createdAt" to Timestamp(createdAt.epochSecond, createdAt.nano),
+        "entryId" to entryId,
+        ENC_FIELD to sealedPayload(cipher),
+    )
+
+    private fun DocumentSnapshot.toQuickNote(cipher: ContentCipher): QuickNote {
+        val readable = QuickNote(
+            id = id,
+            createdAt = getTimestamp("createdAt")
+                ?.let { Instant.ofEpochSecond(it.seconds, it.nanoseconds.toLong()) }
+                ?: Instant.now(),
+            entryId = getString("entryId"),
+        )
+        val sealed = getString(ENC_FIELD) ?: return readable.copy(
+            // Written before encryption existed.
+            text = getString("text").orEmpty(),
+            summary = getString("summary"),
+            embedding = (get("embedding") as? List<*>)?.filterIsInstance<Number>()?.map { it.toFloat() },
+            embeddingModel = getString("embeddingModel"),
+        )
+        val secret = cipher.openJson(sealed, notePath(id))
+            ?: return readable.copy(text = "Can't decrypt this note.", unreadable = true)
+        return readable.copy(
+            text = secret.optString("text"),
+            summary = secret.optStringOrNull("summary"),
+            embedding = secret.optStringOrNull("embedding")?.unpackFloats(),
+            embeddingModel = secret.optStringOrNull("embeddingModel"),
+        )
+    }
 }
 
 /** Demo-mode storage used when Firebase isn't configured. Lost when the app closes. */
@@ -145,8 +182,8 @@ class InMemoryQuickNoteRepository : QuickNoteRepository {
         return note
     }
 
-    override fun setSummary(id: String, summary: String) {
-        notes.update { list -> list.map { if (it.id == id) it.copy(summary = summary) else it } }
+    override fun setSummary(note: QuickNote, summary: String) {
+        notes.update { list -> list.map { if (it.id == note.id) it.copy(summary = summary) else it } }
     }
 
     override fun setEntryLink(noteIds: List<String>, entryId: String?) {

@@ -1,7 +1,7 @@
 package com.adam.insightjournal
 
 import android.os.Bundle
-import androidx.activity.ComponentActivity
+import android.os.SystemClock
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedVisibility
@@ -29,6 +29,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.core.view.WindowCompat
+import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
@@ -52,7 +53,9 @@ import com.adam.insightjournal.ui.notes.QuickNotesScreen
 import com.adam.insightjournal.ui.notes.QuickNotesViewModel
 import com.adam.insightjournal.ui.search.SearchScreen
 import com.adam.insightjournal.ui.search.SearchViewModel
+import com.adam.insightjournal.ui.security.VaultGate
 import com.adam.insightjournal.ui.settings.AppearanceScreen
+import com.adam.insightjournal.ui.settings.SettingsScreen
 import com.adam.insightjournal.ui.splash.SplashScreen
 import com.adam.insightjournal.ui.theme.InsightJournalTheme
 import com.adam.insightjournal.ui.theme.isDark
@@ -61,11 +64,29 @@ import kotlinx.coroutines.delay
 /** How long the loading artwork stays up. The journal loads underneath it meanwhile. */
 private const val SPLASH_MILLIS = 1_600L
 
-class MainActivity : ComponentActivity() {
+/** With fingerprint unlock on, the journal locks again after this long in the background. */
+private const val RELOCK_AFTER_MILLIS = 5 * 60_000L
+
+/** A FragmentActivity (still a ComponentActivity) because the biometric prompt needs one. */
+class MainActivity : FragmentActivity() {
+    private val container by lazy { (application as InsightJournalApp).container }
+    private var stoppedAt = 0L
+
+    override fun onStop() {
+        super.onStop()
+        stoppedAt = SystemClock.elapsedRealtime()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (stoppedAt != 0L && SystemClock.elapsedRealtime() - stoppedAt > RELOCK_AFTER_MILLIS) {
+            container.keyManager?.lockIfBiometric()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val container = (application as InsightJournalApp).container
         setContent {
             val settings by container.themeSettings.settings.collectAsStateWithLifecycle()
             // Saveable, so rotating the phone or coming back to the app doesn't replay it.
@@ -105,16 +126,23 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/** Signed out -> sign-in screen. Signed in -> the journal. */
+/** Signed out -> sign-in screen. Signed in -> unlock (or set up) the journal key -> the journal. */
 @Composable
 fun InsightJournalRoot(container: AppContainer) {
     val user by container.authRepository.currentUser.collectAsStateWithLifecycle()
+    val keys = container.keyManager
     if (user == null) {
         AuthScreen(viewModel(factory = viewModelFactory {
             initializer { AuthViewModel(container.authRepository) }
         }))
-    } else {
+    } else if (keys == null) {
+        // Demo mode: nothing is stored remotely, so there is nothing to encrypt.
         JournalNavHost(container)
+    } else {
+        val vault by keys.state.collectAsStateWithLifecycle()
+        VaultGate(keys, vault, onSignOut = container.authRepository::signOut) {
+            JournalNavHost(container)
+        }
     }
 }
 
@@ -123,6 +151,7 @@ private const val ROUTE_NOTES = "notes"
 private const val ROUTE_INSIGHTS = "insights"
 private const val ROUTE_SEARCH = "search"
 private const val ROUTE_APPEARANCE = "appearance"
+private const val ROUTE_SETTINGS = "settings"
 private const val ARG_ENTRY_ID = "entryId"
 private const val ROUTE_EDITOR = "editor?$ARG_ENTRY_ID={$ARG_ENTRY_ID}"
 
@@ -140,7 +169,7 @@ private fun JournalNavHost(container: AppContainer) {
                 onNewEntry = { navController.navigate("editor") },
                 onOpenEntry = { id -> navController.navigate("editor?$ARG_ENTRY_ID=$id") },
                 onSearch = { navController.navigate(ROUTE_SEARCH) },
-                onAppearance = { navController.navigate(ROUTE_APPEARANCE) },
+                onSettings = { navController.navigate(ROUTE_SETTINGS) },
                 onSignOut = container.authRepository::signOut,
             )
         }
@@ -156,6 +185,7 @@ private fun JournalNavHost(container: AppContainer) {
                         )
                     }
                 }),
+                aiSettings = container.aiSettings,
                 onOpenDraft = { navController.navigate("editor") },
                 bottomBar = { MainTabs(navController, selected = ROUTE_NOTES) },
             )
@@ -172,6 +202,7 @@ private fun JournalNavHost(container: AppContainer) {
                         )
                     }
                 }),
+                aiSettings = container.aiSettings,
                 bottomBar = { MainTabs(navController, selected = ROUTE_INSIGHTS) },
             )
         }
@@ -187,6 +218,18 @@ private fun JournalNavHost(container: AppContainer) {
                     navController.popBackStack()
                     navController.switchToTab(ROUTE_NOTES)
                 },
+            )
+        }
+        composable(ROUTE_SETTINGS) {
+            val user by container.authRepository.currentUser.collectAsStateWithLifecycle()
+            SettingsScreen(
+                user = user,
+                keys = container.keyManager,
+                aiSettings = container.aiSettings,
+                aiConfigured = container.journalAi != null,
+                onAppearance = { navController.navigate(ROUTE_APPEARANCE) },
+                onSignOut = container.authRepository::signOut,
+                onBack = { navController.popBackStack() },
             )
         }
         composable(ROUTE_APPEARANCE) {

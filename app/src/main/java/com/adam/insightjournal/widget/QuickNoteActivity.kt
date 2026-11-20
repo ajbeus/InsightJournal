@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -47,6 +48,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.adam.insightjournal.AppContainer
 import com.adam.insightjournal.InsightJournalApp
 import com.adam.insightjournal.MainActivity
+import com.adam.insightjournal.crypto.VaultState
+import kotlinx.coroutines.flow.MutableStateFlow
 import com.adam.insightjournal.ui.theme.InsightJournalTheme
 
 /**
@@ -62,16 +65,25 @@ class QuickNoteActivity : ComponentActivity() {
         setContent {
             val settings by container.themeSettings.settings.collectAsStateWithLifecycle()
             val user by container.authRepository.currentUser.collectAsStateWithLifecycle()
+            // Demo mode has no key manager and nothing to unlock.
+            val vault by (container.keyManager?.state ?: MutableStateFlow(VaultState.Unlocked))
+                .collectAsStateWithLifecycle()
+            val openApp = {
+                startActivity(Intent(this, MainActivity::class.java))
+                finish()
+            }
             InsightJournalTheme(settings) {
                 CaptureSheet(onDismiss = ::finish) {
                     if (user == null) {
-                        SignedOutMessage(
-                            onOpenApp = {
-                                startActivity(Intent(this, MainActivity::class.java))
-                                finish()
-                            },
-                            onCancel = ::finish,
-                        )
+                        SignedOutMessage(onOpenApp = openApp, onCancel = ::finish)
+                    } else if (vault == VaultState.Checking) {
+                        // Usually a split second: the phone's own key copy is being opened.
+                        Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator()
+                        }
+                    } else if (vault != VaultState.Unlocked) {
+                        // Notes are encrypted before saving, so the key has to be unlocked first.
+                        LockedMessage(onOpenApp = openApp, onCancel = ::finish)
                     } else {
                         NoteForm(
                             onSave = { text ->
@@ -144,6 +156,23 @@ private fun NoteForm(onSave: (String) -> Unit, onCancel: () -> Unit) {
         TextButton(onClick = onCancel) { Text("Cancel") }
         Spacer(Modifier.padding(4.dp))
         Button(onClick = { onSave(text) }, enabled = text.isNotBlank()) { Text("Save") }
+    }
+}
+
+@Composable
+private fun LockedMessage(onOpenApp: () -> Unit, onCancel: () -> Unit) {
+    Text("Unlock your journal first", style = MaterialTheme.typography.titleLarge)
+    Spacer(Modifier.height(8.dp))
+    Text(
+        "Open Insight Journal and unlock it, then you can save quick notes from here.",
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(12.dp))
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+        TextButton(onClick = onCancel) { Text("Cancel") }
+        Spacer(Modifier.padding(4.dp))
+        Button(onClick = onOpenApp) { Text("Open app") }
     }
 }
 

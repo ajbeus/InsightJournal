@@ -32,6 +32,8 @@ data class JournalEntry(
     val summary: String? = null,
     val embedding: List<Float>? = null,
     val embeddingModel: String? = null,
+    /** True when the stored copy couldn't be decrypted; such an entry must not be edited or saved. */
+    val unreadable: Boolean = false,
 ) {
     companion object {
         const val SOURCE_TYPED = "typed"
@@ -75,6 +77,8 @@ data class QuickNote(
     val summary: String? = null,
     val embedding: List<Float>? = null,
     val embeddingModel: String? = null,
+    /** True when the stored copy couldn't be decrypted. */
+    val unreadable: Boolean = false,
 )
 
 /** Metadata for a file in Cloud Storage. Embedded inside its JournalEntry. */

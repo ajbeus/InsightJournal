@@ -37,6 +37,8 @@ import com.adam.insightjournal.insights.Streaks
 import com.adam.insightjournal.insights.WeekDigest
 import com.adam.insightjournal.insights.WeeklySummary
 import java.time.LocalDate
+import com.adam.insightjournal.ai.AiSettings
+import com.adam.insightjournal.ui.ai.rememberAiGate
 import java.time.format.DateTimeFormatter
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -45,7 +47,8 @@ private val shortDate = DateTimeFormatter.ofPattern("MMM d")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun InsightsScreen(viewModel: InsightsViewModel, bottomBar: @Composable () -> Unit) {
+fun InsightsScreen(viewModel: InsightsViewModel, aiSettings: AiSettings, bottomBar: @Composable () -> Unit) {
+    val aiGate = rememberAiGate(aiSettings)
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val summaryRequest by viewModel.summaryRequest.collectAsStateWithLifecycle()
 
@@ -75,7 +78,7 @@ fun InsightsScreen(viewModel: InsightsViewModel, bottomBar: @Composable () -> Un
                         summaryIsCurrent = state.summaryIsCurrent,
                         request = summaryRequest,
                         aiEnabled = viewModel.aiEnabled,
-                        onSummarize = viewModel::summarizeWeek,
+                        onSummarize = { aiGate.run(viewModel::summarizeWeek) },
                     )
                     MoodCard(state.mood, state.moodRange, viewModel::onMoodRangeChange)
                     StreakCard(state.streaks)
